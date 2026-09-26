@@ -186,7 +186,7 @@ if os.path.isdir(FRONTEND):
 
 # ---------------------------------------------------------------- 启动/后台任务
 async def _background_tasks() -> None:
-    """心跳巡检 + 周期快照 + 每小时保留期清理。"""
+    """心跳巡检 + 周期快照 + 每小时过期会话/保留期清理。"""
     hourly = 0
     while True:
         await asyncio.sleep(5)
@@ -198,6 +198,7 @@ async def _background_tasks() -> None:
             pass
         if hourly % 3600 == 0:
             try:
+                auth.purge_expired_sessions()
                 manager.load_index()
                 settings = config.get_settings()
                 for board_id in list(manager.metas.keys()):
@@ -213,6 +214,7 @@ async def _background_tasks() -> None:
 async def on_startup() -> None:
     config.ensure_dirs()
     config.get_settings()
+    auth.purge_expired_sessions()
     manager.load_index()
     from . import seed
     seed.seed_if_empty()

@@ -29,6 +29,10 @@ from .storage import read_json, write_json_atomic
 PBKDF2_ROUNDS = 120_000
 USERNAME_RE = re.compile(r"^[a-zA-Z0-9_一-鿿]{2,24}$")
 
+# 滑动续期落盘节流: 距上次持久化的 expires 超过该间隔才重写 users.json,
+# 避免每个请求都写盘; 远小于 SESSION_TTL_SECS, 不影响续期效果
+SESSION_RENEW_MIN_SECS = 3600
+
 ROLE_ORDER = {"viewer": 1, "commenter": 2, "editor": 3, "owner": 4}
 VALID_ROLES = set(ROLE_ORDER.keys())
 
@@ -119,8 +123,7 @@ def verify_login(username: str, password: str) -> Tuple[Dict[str, Any], str]:
         # 清理过期会话 + 发新 token
         now = time.time()
         sessions = data["sessions"]
-        for tok in [t for t, s in sessions.items() if s.get("expires", 0) < now]:
-            sessions.pop(tok, None)
+        _purge_expired(data, now)
         token = secrets.token_urlsafe(24)
         sessions[token] = {
             "user": user["username"],
@@ -147,16 +150,42 @@ def user_from_token(token: Optional[str]) -> Optional[Dict[str, Any]]:
         sess = data["sessions"].get(token)
         if not sess:
             return None
-        if sess.get("expires", 0) < time.time():
+        now = time.time()
+        if sess.get("expires", 0) < now:
             data["sessions"].pop(token, None)
             _save_store(data)
             return None
         user = data["users"].get(sess.get("user"))
         if not user or user.get("disabled"):
             return None
-        # 滑动过期
-        sess["expires"] = time.time() + config.SESSION_TTL_SECS
+        # 滑动过期: 顺延 expires 并持久化(按 SESSION_RENEW_MIN_SECS 节流),
+        # 否则续期只停留在本次加载的内存副本里, 会话仍在登录后固定时长过期
+        new_expires = now + config.SESSION_TTL_SECS
+        if sess.get("expires", 0) < new_expires - SESSION_RENEW_MIN_SECS:
+            sess["expires"] = new_expires
+            _purge_expired(data, now)
+            _save_store(data)
         return public_user(user)
+
+
+def _purge_expired(data: Dict[str, Any], now: Optional[float] = None) -> int:
+    """从已加载的 store 中移除过期会话, 返回清理数量(调用方负责保存)。"""
+    now = now if now is not None else time.time()
+    sessions = data["sessions"]
+    expired = [t for t, s in sessions.items() if s.get("expires", 0) < now]
+    for tok in expired:
+        sessions.pop(tok, None)
+    return len(expired)
+
+
+def purge_expired_sessions() -> int:
+    """清理所有已过期会话并落盘, 返回清理数量(供后台周期任务调用)。"""
+    with _store_lock:
+        data = _load_store()
+        removed = _purge_expired(data)
+        if removed:
+            _save_store(data)
+        return removed
 
 
 def list_users() -> List[Dict[str, Any]]:
