@@ -54,6 +54,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
 
 # ---------------------------------------------------------------- 进程级常量
 SESSION_TTL_SECS = 7 * 24 * 3600        # 会话令牌有效期
+SESSION_RENEW_SECS = 3600               # 滑动续期落盘节流: 距上次续期超过该间隔才重写 users.json
 WS_HEARTBEAT_SECS = 25                  # 服务端 ping 间隔
 WS_TIMEOUT_SECS = 65                    # 超过该时间无任何消息判定断线
 RING_BUFFER_OPS = 2000                  # 每白板内存中缓存的最近操作数(快速补发)

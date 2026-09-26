@@ -119,8 +119,7 @@ def verify_login(username: str, password: str) -> Tuple[Dict[str, Any], str]:
         # 清理过期会话 + 发新 token
         now = time.time()
         sessions = data["sessions"]
-        for tok in [t for t, s in sessions.items() if s.get("expires", 0) < now]:
-            sessions.pop(tok, None)
+        _purge_expired_sessions(data, now)
         token = secrets.token_urlsafe(24)
         sessions[token] = {
             "user": user["username"],
@@ -147,16 +146,41 @@ def user_from_token(token: Optional[str]) -> Optional[Dict[str, Any]]:
         sess = data["sessions"].get(token)
         if not sess:
             return None
-        if sess.get("expires", 0) < time.time():
+        now = time.time()
+        if sess.get("expires", 0) < now:
             data["sessions"].pop(token, None)
             _save_store(data)
             return None
         user = data["users"].get(sess.get("user"))
         if not user or user.get("disabled"):
             return None
-        # 滑动过期
-        sess["expires"] = time.time() + config.SESSION_TTL_SECS
+        # 滑动过期: 续期必须落盘才生效(_load_store 每次重读文件)。
+        # 按 SESSION_RENEW_SECS 节流, 避免每个请求都原子重写 users.json。
+        if sess.get("expires", 0) < now + config.SESSION_TTL_SECS - config.SESSION_RENEW_SECS:
+            sess["expires"] = now + config.SESSION_TTL_SECS
+            _purge_expired_sessions(data, now)   # 借落盘机会顺手清扫
+            _save_store(data)
         return public_user(user)
+
+
+def _purge_expired_sessions(data: Dict[str, Any], now: Optional[float] = None) -> int:
+    """从已加载的 store 中删除所有过期会话(不落盘), 返回清理数量。"""
+    now = now if now is not None else time.time()
+    sessions = data["sessions"]
+    expired = [t for t, s in sessions.items() if s.get("expires", 0) < now]
+    for tok in expired:
+        sessions.pop(tok, None)
+    return len(expired)
+
+
+def prune_expired_sessions() -> int:
+    """清理所有过期会话并落盘, 返回清理数量(供后台周期任务调用)。"""
+    with _store_lock:
+        data = _load_store()
+        removed = _purge_expired_sessions(data)
+        if removed:
+            _save_store(data)
+        return removed
 
 
 def list_users() -> List[Dict[str, Any]]:

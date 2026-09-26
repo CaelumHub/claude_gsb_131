@@ -198,6 +198,7 @@ async def _background_tasks() -> None:
             pass
         if hourly % 3600 == 0:
             try:
+                auth.prune_expired_sessions()
                 manager.load_index()
                 settings = config.get_settings()
                 for board_id in list(manager.metas.keys()):
